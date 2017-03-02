@@ -62,6 +62,9 @@ fn read_blocks(file: &mut File, filesize: u64, initial_block: u32) -> u32 {
             Err(_) => break,
             Ok(_) => {
                 let magic = (buf[0] as u32) | ((buf[1] as u32)<<8) | ((buf[2] as u32)<<16) | ((buf[3] as u32)<<24);
+                if magic == 0 {
+                    break;
+                };
                 assert_eq!(3652501241, magic);
             }
         }
