@@ -5,3 +5,5 @@ authors = ["alexeyakhunov"]
 
 [dependencies]
 rust-crypto = "0.2.36"
+rust-base58 = "0.0.4"
+bloomfilter = "0.0.10"
