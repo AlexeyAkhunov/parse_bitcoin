@@ -222,7 +222,58 @@ fn read_block<R>(prefix: u8, reader: R, size: u64,
     }
 }
 
+enum Opcode {
+    Op0 = 0x00,
+    OpPushdata1 = 0x4C, OpPushdata2, OpPushdata4,
+    Op1Negate,
+    OpReserved,
+    Op1, Op2, Op3, Op4, Op5, Op6, Op7, Op8, Op9, Op10, Op11, Op12, Op13, Op14, Op15, Op16,
+    OpNop, OpVer, OpIf, OpNotif, OpVerif, OpVerNotIf, OpElse, OpEndif, OpVerify,
+    OpReturn, OpTotalStack, OpFromaltstack, Op2Drop, Op2Dup, Op3Dup, Op2Over, Op2Rot, Op2Swap,
+    OpIfdup, OpDepth, OpDrop, OpDup, OpNip, OpOver, OpPick, OpRoll, OpRot,
+    OpSwap, OpTuck, OpCat, OpSubstr, OpLeft, OpRight, OpSize, OpInvert, OpAnd,
+    OpOr, OpXor, OpEqual, OpEqualverify, OpReserved1, OpReserved2, Op1Add, Op1Sub, Op2Mul,
+    Op2Div, OpNegate, OpAbs, OpNot, Op0NotEqual, OpAdd, OpSub, OpMul, OpDiv,
+    OpMod, OpLshift, OpRshift, OpBooland, OpBoolor,
+    OpNumequal, OpNumequalverify, OpNumnotequal, OpLessthan,
+    OpGreaterthan, OpLessthanorequal, OpGreaterthanorequal, OpMin, OpMax,
+    OpWithin, OpRipemd160, OpSha1, OpSha256, OpHash160,
+    OpHash256, OpCodeseparator, OpChecksig, OpChecksigverify, OpCheckmultisig,
+    OpCheckmultisigverify,
+    OpNop1, OpNop2, OpNop3, OpNop4, OpNop5, OpNop6, OpNop7, OpNop8, OpNop9, OpNop10,
+    OpInvalidopcode = 0xFF,
+}
+
+enum OutputType {
+    P2pk,
+    Unclassified,
+}
+
+fn classify_output(tx_id: &[u8], output: &[u8]) -> OutputType {
+    match decode_script(output) {
+        Err(why) => {
+            println!("Could not decode output in txid: {:?}, error: {:?}", tx_id, why)
+        },
+        Ok(decoded_output) => {
+            if decoded_output.len() > 0 && decoded_output[0].0 == Opcode::OpDup as u8 {
+                if decoded_output.len() > 1 && decoded_output[1].0 == Opcode::OpHash160 as u8 {
+                    if decoded_output.len() > 2 && decoded_output[2].0 == 20u8 {
+                        if decoded_output.len() > 3 && decoded_output[3].0 == Opcode::OpEqualverify as u8 {
+                            if decoded_output.len() == 5 && decoded_output[4].0 == Opcode::OpChecksig as u8 {
+                                //println!("P2PK");
+                                return OutputType::P2pk;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return OutputType::Unclassified;
+}
+
 fn action_input_output(tx_id: &[u8], input: &[u8], output: &[u8]) {
+    classify_output(tx_id, output);
     let decoded_script_sig = decode_script(input);
     match decoded_script_sig {
         Err(why) => {
@@ -232,19 +283,12 @@ fn action_input_output(tx_id: &[u8], input: &[u8], output: &[u8]) {
             let addr = public_key_from_script(decoded);
             match addr {
                 Some(addr_str) => {
-                    //println!("{:?}", addr_str);
+                    //println!("{:?}, txid: {:?}", addr_str, print_32bytes(tx_id));
                 },
                 None => {}
             }
         }
     }
-}
-
-fn prevout_hash(prevout_hash_slice: &[u8]) {
-    let mut a: [u8;32] = [0;32];
-    a.clone_from_slice(prevout_hash_slice);
-    a.reverse();
-    println!("Prevout_hash: {}", print_32bytes(&a));    
 }
 
 fn copy_id(id_slice: &[u8]) -> [u8;32] {
@@ -263,15 +307,13 @@ fn tx_id(tx_slice: &[u8]) -> [u8;32] {
     sha256.reset();
     sha256.input(&buffer32b[0..32]);
     sha256.result(&mut buffer32b);
-    buffer32b.reverse();
-    buffer32b.reverse();
     buffer32b
 }
 
 fn print_32bytes(bytes: &[u8]) -> String {
     let mut s = String::new();
-    for &byte in bytes {
-        write!(&mut s, "{:02x}", byte).unwrap();
+    for i in 0..bytes.len() {
+        write!(&mut s, "{:02x}", bytes[bytes.len()-i-1]).unwrap();
     };
     s   
 }
@@ -296,28 +338,6 @@ fn read_varint(slice: &[u8], pos: usize) -> (u64, usize) {
                  ((slice[pos+5] as u64)<<32) | ((slice[pos+6] as u64)<<40) | ((slice[pos+7] as u64)<<48) | ((slice[pos+8] as u64)<<56), pos+9),
         _ => (slice[pos] as u64, pos+1),
     }
-}
-
-enum Opcode {
-    Op0 = 0x00,
-    OpPushdata1 = 0x4C, OpPushdata2, OpPushdata4,
-    Op1Negate,
-    OpReserved,
-    Op1, Op2, Op3, Op4, Op5, Op6, Op7, Op8, Op9, Op10, Op11, Op12, Op13, Op14, Op15, Op16,
-    OpNop, OpVer, OpIf, OpNotif, OpVerif, OpVerNotIf, OpElse, OpEndif, OpVerify,
-    OpReturn, OpTotalStack, OpFromaltstack, Op2Drop, Op2Dup, Op3Dup, Op2Over, Op2Rot, Op2Swap,
-    OpIfdup, OpDepth, OpDrop, OpDup, OpNip, OpOver, OpPick, OpRoll, OpRot,
-    OpSwap, OpTuck, OpCat, OpSubstr, OpLeft, OpRight, OpSize, OpInvert, OpAnd,
-    OpOr, OpXor, OpEqual, OpEqualverify, OpReserved1, OpReserved2, Op1Add, Op1Sub, Op2Mul,
-    Op2Div, OpNegate, OpAbs, OpNot, Op0NotEqual, OpAdd, OpSub, OpMul, OpDiv,
-    OpMod, OpLshift, OpRshift, OpBooland, OpBoolor,
-    OpNumequal, OpNumequalverify, OpNumnotequal, OpLessthan,
-    OpGreaterthan, OpLessthanorequal, OpGreaterthanorequal, OpMin, OpMax,
-    OpWithin, OpRipemd160, OpSha1, OpSha256, OpHash160,
-    OpHash256, OpCodeseparator, OpChecksig, OpChecksigverify, OpCheckmultisig,
-    OpCheckmultisigverify,
-    OpNop1, OpNop2, OpNop3, OpNop4, OpNop5, OpNop6, OpNop7, OpNop8, OpNop9, OpNop10,
-    OpInvalidopcode = 0xFF,
 }
 
 fn decode_script(slice: &[u8]) -> Result<Vec<(u8, Option<&[u8]>)>,String> {
