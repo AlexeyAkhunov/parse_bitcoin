@@ -151,7 +151,7 @@ fn read_block<R>(prefix: u8, reader: R, size: u64,
                                     let to_remove = match prevout_scripts[prevout_n] {
                                         None => false,
                                         Some(ref prevout_script) => {
-                                            action_input_output(&id, &block[p..p+(script_sig_len as usize)], prevout_script.as_slice());
+                                            action_input_output(&id, &block[p..p+(script_sig_len as usize)], prevout_script.as_slice(), prevout_n);
                                             true
                                         }
                                     };
@@ -199,7 +199,7 @@ fn read_block<R>(prefix: u8, reader: R, size: u64,
                                         let to_remove = match utxos[i] {
                                             None => false,
                                             Some(ref output) => {
-                                                action_input_output(&id, input_script, output.as_slice());
+                                                action_input_output(&id, input_script, output.as_slice(), i);
                                                 true
                                             }
                                         };
@@ -245,35 +245,227 @@ enum Opcode {
 }
 
 enum OutputType {
-    P2pk,
+    PayToAddress,
+    PayToPublicKey,
+    PayToCompactPublicKey,
+    PayToHash,
+    PayToScriptHash,
+    Multisig1of1,
+    Multisig1of2,
+    Multisig1of3,
+    Multisig2of2,
+    Multisig2of3,
     Unclassified,
+    Strange1,
+    Strange2,
+    Strange3,
+    Strange4,
+    Strange5,
+    Strange6,
+    Strange7,
+    Strange8,
+    Empty,
+    OpDup,
 }
 
-fn classify_output(tx_id: &[u8], output: &[u8]) -> OutputType {
+fn classify_output(tx_id: &[u8], output: &[u8], output_idx: usize) -> OutputType {
     match decode_script(output) {
         Err(why) => {
-            println!("Could not decode output in txid: {:?}, error: {:?}", tx_id, why)
+            println!("Could not decode output in txid: {:?}, error: {:?}", print_32bytes(tx_id), why)
         },
         Ok(decoded_output) => {
-            if decoded_output.len() > 0 && decoded_output[0].0 == Opcode::OpDup as u8 {
-                if decoded_output.len() > 1 && decoded_output[1].0 == Opcode::OpHash160 as u8 {
-                    if decoded_output.len() > 2 && decoded_output[2].0 == 20u8 {
-                        if decoded_output.len() > 3 && decoded_output[3].0 == Opcode::OpEqualverify as u8 {
-                            if decoded_output.len() == 5 && decoded_output[4].0 == Opcode::OpChecksig as u8 {
-                                //println!("P2PK");
-                                return OutputType::P2pk;
+            if decoded_output.len() == 0 {
+                return OutputType::Empty;
+            } else {
+                let op0 = decoded_output[0].0;
+                if op0 == Opcode::OpDup as u8 {
+                    if decoded_output.len() == 1 {
+                        return OutputType::OpDup;
+                    } else {
+                        let op1 = decoded_output[1].0;
+                        if op1 == Opcode::OpHash160 as u8 {
+                            if decoded_output.len() > 2 && decoded_output[2].0 == 20u8 {
+                                if decoded_output.len() > 3 && decoded_output[3].0 == Opcode::OpEqualverify as u8 {
+                                    if decoded_output.len() == 5 && decoded_output[4].0 == Opcode::OpChecksig as u8 {
+                                        return OutputType::PayToAddress;
+                                    }
+                                }
+                            }
+                        } else if op1 == Opcode::Op0 as u8 {
+                            if decoded_output.len() > 2 && decoded_output[2].0 == Opcode::OpLessthan as u8 {
+                                if decoded_output.len() > 3 && decoded_output[3].0 == Opcode::OpVerify as u8 {
+                                    if decoded_output.len() > 4 && decoded_output[4].0 == Opcode::OpAbs as u8 {
+                                        if decoded_output.len() > 5 && decoded_output[5].0 == Opcode::Op1 as u8 {
+                                            if decoded_output.len() > 6 && decoded_output[6].0 == Opcode::Op16 as u8 {
+                                                if decoded_output.len() > 7 && decoded_output[7].0 == Opcode::OpWithin as u8 {
+                                                    if decoded_output.len() > 8 && decoded_output[8].0 == Opcode::OpTotalStack as u8 {
+                                                        if decoded_output.len() > 9 && decoded_output[9].0 == 33u8 {
+                                                            if decoded_output.len() > 10 && decoded_output[10].0 == Opcode::OpChecksigverify as u8 {
+                                                                if decoded_output.len() == 12 && decoded_output[11].0 == Opcode::OpFromaltstack as u8 {
+                                                                    return OutputType::Strange7;
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }                            
+                        }
+                    }
+                } else if op0 == 65u8 {
+                    if decoded_output.len() == 2 && decoded_output[1].0 == Opcode::OpChecksig as u8 {
+                        return OutputType::PayToPublicKey;
+                    }
+                } else if op0 == 33u8 {
+                    if decoded_output.len() > 1 {
+                        let op1 = decoded_output[1].0;
+                        if decoded_output.len() == 2 && op1 == Opcode::OpChecksig as u8 {
+                            return OutputType::PayToCompactPublicKey;
+                        } else if op1 == Opcode::OpSwap as u8 {
+                            if decoded_output.len() > 2 && decoded_output[2].0 == Opcode::Op1Add as u8 {
+                                if decoded_output.len() == 4 && decoded_output[3].0 == Opcode::OpCheckmultisig as u8 {
+                                    return OutputType::Strange6;
+                                }
+                            }
+                        }
+                    }
+                } else if op0 == 20u8 {
+                    if decoded_output.len() > 1 && decoded_output[1].0 == Opcode::OpNop2 as u8 {
+                        if decoded_output.len() == 3 && decoded_output[2].0 == Opcode::OpDrop as u8 {
+                            return OutputType::Strange1;
+                        }
+                    }
+                } else if op0 == 8u8 {
+                    if decoded_output.len() > 1 && decoded_output[1].0 == Opcode::OpDrop as u8 {
+                        if decoded_output.len() > 2 && decoded_output[2].0 == Opcode::OpSha256 as u8 {
+                            if decoded_output.len() > 3 && decoded_output[3].0 == 32u8 {
+                                if decoded_output.len() == 5 && decoded_output[4].0 == Opcode::OpEqual as u8 {
+                                    return OutputType::PayToHash;
+                                }
+                            }
+                        }
+                    }
+                } else if op0 == 76u8 {
+                     if decoded_output.len() > 1 && decoded_output[1].0 == Opcode::OpDrop as u8 {
+                        if decoded_output.len() > 2 && decoded_output[2].0 == Opcode::OpDup as u8 {
+                            if decoded_output.len() > 3 && decoded_output[3].0 == Opcode::OpHash160 as u8 {
+                                if decoded_output.len() > 4 && decoded_output[4].0 == 20u8 {
+                                    if decoded_output.len() > 5 && decoded_output[5].0 == Opcode::OpEqualverify as u8 {
+                                        if decoded_output.len() == 7 && decoded_output[6].0 == Opcode::OpChecksig as u8 {
+                                            return OutputType::Strange8;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                   }
+                } else if op0 == Opcode::Op2 as u8 {
+                    if decoded_output.len() > 1 && (decoded_output[1].0 == 33u8 || decoded_output[1].0 == 65u8) {
+                        if decoded_output.len() > 2 && (decoded_output[2].0 == 33u8 || decoded_output[2].0 == 65u8) {
+                            if decoded_output.len() > 3 {
+                                let op3 = decoded_output[3].0;
+                                if op3 == 65u8 || op3 == 33u8 {
+                                    if decoded_output.len() > 4 && decoded_output[4].0 == Opcode::Op3 as u8 {
+                                        if decoded_output.len() == 6 && decoded_output[5].0 == Opcode::OpCheckmultisig as u8 {
+                                            return OutputType::Multisig2of3;
+                                        }
+                                    }
+                                } else if op3 == Opcode::Op2 as u8 {
+                                    if decoded_output.len() == 5 && decoded_output[4].0 == Opcode::OpCheckmultisig as u8 {
+                                        return OutputType::Multisig2of2;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else if op0 == Opcode::OpMin as u8 {
+                    if decoded_output.len() > 1 && decoded_output[1].0 == Opcode::Op3 as u8 {
+                        if decoded_output.len() ==3 && decoded_output[2].0 == Opcode::OpEqual as u8 {
+                            return OutputType::Strange2;
+                        }
+                    }
+                } else if op0 == Opcode::OpHash160 as u8 {
+                    if decoded_output.len() > 1 && decoded_output[1].0 == 20u8 {
+                        if decoded_output.len() == 3 && decoded_output[2].0 == Opcode::OpEqual as u8 {
+                            return OutputType::PayToScriptHash;
+                        }
+                    }
+                } else if (op0 == 32u8 || op0 == 36u8) && decoded_output.len() == 1 {
+                    return OutputType::Strange3;
+                } else if op0 == Opcode::Op1 as u8 {
+                    if decoded_output.len() > 1 {
+                        let op1 = decoded_output[1].0;
+                        if op1 == 33u8 || op1 == 65u8 || op1 == 76u8 {
+                            if decoded_output.len() > 2 {
+                                let op2 = decoded_output[2].0;
+                                if op2 == 33u8 || op2 == 65u8  || op2 == 76u8 {
+                                    if decoded_output.len() > 3 {
+                                        let op3 = decoded_output[3].0;
+                                        if op3 == Opcode::Op2 as u8 {
+                                            if decoded_output.len() == 5 && decoded_output[4].0 == Opcode::OpCheckmultisig as u8 {
+                                                return OutputType::Multisig1of2;
+                                            }
+                                        } else if op3 == 33u8 {
+                                            if decoded_output.len() > 4 && decoded_output[4].0 == Opcode::Op3 as u8 {
+                                                if decoded_output.len() == 6 && decoded_output[5].0 == Opcode::OpCheckmultisig as u8 {
+                                                    return OutputType::Multisig1of3;
+                                                }
+                                            }
+                                        }
+                                    }
+                                } else if op2 == Opcode::Op1 as u8 {
+                                    if decoded_output.len() == 4 && decoded_output[3].0 == Opcode::OpCheckmultisig as u8 {
+                                        return OutputType::Multisig1of1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else if op0 == Opcode::OpIf as u8 {
+                    if decoded_output.len() > 1 && decoded_output[1].0 == Opcode::OpHash256 as u8 {
+                        if decoded_output.len() > 2 && decoded_output[2].0 == 32u8 {
+                            if decoded_output.len() > 3 && decoded_output[3].0 == Opcode::OpEqual as u8 {
+                                if decoded_output.len() > 4 && decoded_output[4].0 == Opcode::OpElse as u8 {
+                                    if decoded_output.len() > 5 && decoded_output[5].0 == Opcode::OpHash256 as u8 {
+                                        if decoded_output.len() > 6 && decoded_output[6].0 == 32u8 {
+                                            if decoded_output.len() > 7 && decoded_output[7].0 == Opcode::OpEqual as u8 {
+                                                if decoded_output.len() == 9 && decoded_output[8].0 == Opcode::OpEndif as u8 {
+                                                    return OutputType::Strange4;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else if op0 == Opcode::OpDepth as u8 {
+                    if decoded_output.len() > 1 && decoded_output[1].0 == Opcode::OpHash256 as u8 {
+                        if decoded_output.len() > 2 && decoded_output[2].0 == Opcode::OpHash160 as u8 {
+                            if decoded_output.len() > 3 && decoded_output[3].0 == Opcode::OpSha256 as u8 {
+                                if decoded_output.len() > 4 && decoded_output[4].0 == Opcode::OpSha1 as u8 {
+                                    if decoded_output.len() > 5 && decoded_output[5].0 == Opcode::OpRipemd160 as u8 {
+                                        if decoded_output.len() == 7 && decoded_output[6].0 == Opcode::OpEqual as u8 {
+                                            return OutputType::Strange5;
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
                 }
             }
+            println!("Unclassified tx output {:?} {:?} {:?}", print_32bytes(tx_id), output_idx, decoded_output);
         }
     }
     return OutputType::Unclassified;
 }
 
-fn action_input_output(tx_id: &[u8], input: &[u8], output: &[u8]) {
-    classify_output(tx_id, output);
+fn action_input_output(tx_id: &[u8], input: &[u8], output: &[u8], output_idx: usize) {
+    classify_output(tx_id, output, output_idx);
     let decoded_script_sig = decode_script(input);
     match decoded_script_sig {
         Err(why) => {
