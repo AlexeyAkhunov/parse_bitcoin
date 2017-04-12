@@ -229,7 +229,7 @@ enum Opcode {
     OpReserved,
     Op1, Op2, Op3, Op4, Op5, Op6, Op7, Op8, Op9, Op10, Op11, Op12, Op13, Op14, Op15, Op16,
     OpNop, OpVer, OpIf, OpNotif, OpVerif, OpVerNotIf, OpElse, OpEndif, OpVerify,
-    OpReturn, OpTotalStack, OpFromaltstack, Op2Drop, Op2Dup, Op3Dup, Op2Over, Op2Rot, Op2Swap,
+    OpReturn, OpToaltStack, OpFromaltstack, Op2Drop, Op2Dup, Op3Dup, Op2Over, Op2Rot, Op2Swap,
     OpIfdup, OpDepth, OpDrop, OpDup, OpNip, OpOver, OpPick, OpRoll, OpRot,
     OpSwap, OpTuck, OpCat, OpSubstr, OpLeft, OpRight, OpSize, OpInvert, OpAnd,
     OpOr, OpXor, OpEqual, OpEqualverify, OpReserved1, OpReserved2, Op1Add, Op1Sub, Op2Mul,
@@ -253,8 +253,11 @@ enum OutputType {
     Multisig1of1,
     Multisig1of2,
     Multisig1of3,
+    Multisig1of9,
     Multisig2of2,
     Multisig2of3,
+    Multisig3of3,
+    Multisig9of9,
     Multisig16of16,
     Unclassified,
     Strange1,
@@ -268,6 +271,11 @@ enum OutputType {
     Strange9,
     Strange10,
     Strange11,
+    Strange12,
+    Strange13,
+    Strange14,
+    Strange15,
+    Strange16,
     Empty,
     OpDup,
 }
@@ -302,7 +310,7 @@ fn classify_output(tx_id: &[u8], output: &[u8], output_idx: usize) -> OutputType
                                         if decoded_output.len() > 5 && decoded_output[5].0 == Opcode::Op1 as u8 {
                                             if decoded_output.len() > 6 && decoded_output[6].0 == Opcode::Op16 as u8 {
                                                 if decoded_output.len() > 7 && decoded_output[7].0 == Opcode::OpWithin as u8 {
-                                                    if decoded_output.len() > 8 && decoded_output[8].0 == Opcode::OpTotalStack as u8 {
+                                                    if decoded_output.len() > 8 && decoded_output[8].0 == Opcode::OpToaltStack as u8 {
                                                         if decoded_output.len() > 9 && decoded_output[9].0 == 33u8 {
                                                             if decoded_output.len() > 10 && decoded_output[10].0 == Opcode::OpChecksigverify as u8 {
                                                                 if decoded_output.len() == 12 && decoded_output[11].0 == Opcode::OpFromaltstack as u8 {
@@ -317,6 +325,13 @@ fn classify_output(tx_id: &[u8], output: &[u8], output_idx: usize) -> OutputType
                                     }
                                 }
                             }                            
+                        } else if op1 == Opcode::OpHash256 as u8 {
+                            if decoded_output.len() == 11 &&
+                            decoded_output[2].0 == 32u8 && decoded_output[3].0 == Opcode::OpEqual as u8 && decoded_output[4].0 == Opcode::OpNotif as u8 &&
+                            decoded_output[5].0 == Opcode::OpHash256 as u8 && decoded_output[6].0 == 32u8 && decoded_output[7].0 == Opcode::OpEqual as u8 &&
+                            decoded_output[8].0 == Opcode::OpEndif as u8 && decoded_output[9].0 == 77u8 && decoded_output[10].0 == Opcode::OpDrop as u8 {
+                                return OutputType::Strange15;
+                            }
                         }
                     }
                 } else if op0 == 65u8 {
@@ -475,9 +490,19 @@ fn classify_output(tx_id: &[u8], output: &[u8], output_idx: usize) -> OutputType
                                                 return OutputType::Multisig1of2;
                                             }
                                         } else if op3 == 33u8 || op3 == 65u8 {
-                                            if decoded_output.len() > 4 && decoded_output[4].0 == Opcode::Op3 as u8 {
-                                                if decoded_output.len() == 6 && decoded_output[5].0 == Opcode::OpCheckmultisig as u8 {
-                                                    return OutputType::Multisig1of3;
+                                            if decoded_output.len() > 4 {
+                                                let op4 = decoded_output[4].0;
+                                                if op4 == Opcode::Op3 as u8 {
+                                                    if decoded_output.len() == 6 && decoded_output[5].0 == Opcode::OpCheckmultisig as u8 {
+                                                        return OutputType::Multisig1of3;
+                                                    }
+                                                } else if op4 == 33u8 {
+                                                    if decoded_output.len() == 12 &&
+                                                    decoded_output[5].0 == 33u8 && decoded_output[6].0 == 33u8 && decoded_output[7].0 == 33u8 &&
+                                                    decoded_output[8].0 == 33u8 && decoded_output[9].0 == 33u8 && decoded_output[10].0 == Opcode::Op9 as u8 &&
+                                                    decoded_output[11].0 == Opcode::OpCheckmultisig as u8 {
+                                                        return OutputType::Multisig1of9;
+                                                    }
                                                 }
                                             }
                                         }
@@ -489,6 +514,26 @@ fn classify_output(tx_id: &[u8], output: &[u8], output_idx: usize) -> OutputType
                                 }
                             }
                         }
+                    }
+                } else if op0 == Opcode::Op3 as u8 {
+                    if decoded_output.len() > 1 && decoded_output[1].0 == 65u8 {
+                        if decoded_output.len() > 2 && decoded_output[2].0 == 65u8 {
+                            if decoded_output.len() > 3 && decoded_output[3].0 == 65u8 {
+                                if decoded_output.len() > 4 && decoded_output[4].0 == Opcode::Op3 as u8 {
+                                    if decoded_output.len() == 6 && decoded_output[5].0 == Opcode::OpCheckmultisig as u8 {
+                                        return OutputType::Multisig3of3;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else if op0 == Opcode::Op9 as u8 {
+                    if decoded_output.len() == 12 &&
+                    decoded_output[1].0 == 33u8 && decoded_output[2].0 == 33u8 && decoded_output[3].0 == 33u8 &&
+                    decoded_output[4].0 == 33u8 && decoded_output[5].0 == 33u8 && decoded_output[6].0 == 33u8 &&
+                    decoded_output[7].0 == 33u8 && decoded_output[8].0 == 33u8 && decoded_output[9].0 == 33u8 &&
+                    decoded_output[10].0 == Opcode::Op9 as u8 && decoded_output[11].0 == Opcode::OpCheckmultisig as u8 {
+                        return OutputType::Multisig9of9;
                     }
                 } else if op0 == Opcode::OpIf as u8 {
                     if decoded_output.len() > 1 && decoded_output[1].0 == Opcode::OpHash256 as u8 {
@@ -509,16 +554,53 @@ fn classify_output(tx_id: &[u8], output: &[u8], output_idx: usize) -> OutputType
                         }
                     }
                 } else if op0 == Opcode::OpDepth as u8 {
-                    if decoded_output.len() > 1 && decoded_output[1].0 == Opcode::OpHash256 as u8 {
-                        if decoded_output.len() > 2 && decoded_output[2].0 == Opcode::OpHash160 as u8 {
-                            if decoded_output.len() > 3 && decoded_output[3].0 == Opcode::OpSha256 as u8 {
-                                if decoded_output.len() > 4 && decoded_output[4].0 == Opcode::OpSha1 as u8 {
-                                    if decoded_output.len() > 5 && decoded_output[5].0 == Opcode::OpRipemd160 as u8 {
-                                        if decoded_output.len() == 7 && decoded_output[6].0 == Opcode::OpEqual as u8 {
-                                            return OutputType::Strange5;
+                    if decoded_output.len() > 1 {
+                        let op1 = decoded_output[1].0;
+                        if op1 == Opcode::OpHash256 as u8 {
+                            if decoded_output.len() > 2 && decoded_output[2].0 == Opcode::OpHash160 as u8 {
+                                if decoded_output.len() > 3 && decoded_output[3].0 == Opcode::OpSha256 as u8 {
+                                    if decoded_output.len() > 4 && decoded_output[4].0 == Opcode::OpSha1 as u8 {
+                                        if decoded_output.len() > 5 && decoded_output[5].0 == Opcode::OpRipemd160 as u8 {
+                                            if decoded_output.len() == 7 && decoded_output[6].0 == Opcode::OpEqual as u8 {
+                                                return OutputType::Strange5;
+                                            }
                                         }
                                     }
                                 }
+                            }
+                        } else if op1 == Opcode::Op1Sub as u8 {
+                            if decoded_output.len() == 33 &&
+                            decoded_output[2].0 == Opcode::OpIf as u8 && decoded_output[3].0 == Opcode::OpReturn as u8 && decoded_output[4].0 == 36u8 &&
+                            decoded_output[5].0 == Opcode::OpEndif as u8 && decoded_output[6].0 == Opcode::Op0 as u8 && decoded_output[7].0 == Opcode::OpToaltStack as u8 &&
+                            decoded_output[8].0 == Opcode::OpDup as u8 && decoded_output[9].0 == Opcode::OpHash256 as u8 && decoded_output[10].0 == 32u8 &&
+                            decoded_output[11].0 == Opcode::OpEqual as u8 && decoded_output[12].0 == Opcode::OpIf as u8 && decoded_output[13].0 == Opcode::Op1 as u8 &&
+                            decoded_output[14].0 == Opcode::OpToaltStack as u8 && decoded_output[15].0 == Opcode::OpEndif as u8 && decoded_output[16].0 == Opcode::OpDup as u8 &&
+                            decoded_output[17].0 == Opcode::OpHash256 as u8 && decoded_output[18].0 == 32u8 && decoded_output[19].0 == Opcode::OpEqual as u8 &&
+                            decoded_output[20].0 == Opcode::OpIf as u8 && decoded_output[21].0 == Opcode::Op1 as u8 && decoded_output[22].0 == Opcode::OpToaltStack as u8 &&
+                            decoded_output[23].0 == Opcode::OpEndif as u8 && decoded_output[24].0 == Opcode::OpDup as u8 && decoded_output[25].0 == Opcode::OpHash256 as u8 &&
+                            decoded_output[26].0 == 32u8 && decoded_output[27].0 == Opcode::OpEqual as u8 && decoded_output[28].0 == Opcode::OpIf as u8 &&
+                            decoded_output[29].0 == Opcode::Op1 as u8 && decoded_output[30].0 == Opcode::OpToaltStack as u8 && decoded_output[31].0 == Opcode::OpEndif as u8 &&
+                            decoded_output[32].0 == Opcode::OpFromaltstack as u8 {
+                                return OutputType::Strange13;
+                            }
+                        } else if op1 == Opcode::OpToaltStack as u8 {
+                            if decoded_output.len() == 46 &&
+                            decoded_output[2].0 == Opcode::OpDup as u8 && decoded_output[3].0 == Opcode::OpHash256 as u8 && decoded_output[4].0 == 32u8 &&
+                            decoded_output[5].0 == Opcode::OpEqual as u8 && decoded_output[6].0 == Opcode::OpNotif as u8 && decoded_output[7].0 == Opcode::OpNegate as u8 &&
+                            decoded_output[8].0 == Opcode::Op3 as u8 && decoded_output[9].0 == Opcode::OpAdd as u8 && decoded_output[10].0 == Opcode::OpAbs as u8 &&
+                            decoded_output[11].0 == Opcode::Op2 as u8 && decoded_output[12].0 == Opcode::OpSub as u8 && decoded_output[13].0 == Opcode::Op2 as u8 &&
+                            decoded_output[14].0 == Opcode::OpEqualverify as u8 && decoded_output[15].0 == Opcode::OpFromaltstack as u8 && decoded_output[16].0 == Opcode::OpDup as u8 &&
+                            decoded_output[17].0 == Opcode::Op3 as u8 && decoded_output[18].0 == Opcode::OpAdd as u8 && decoded_output[19].0 == Opcode::OpToaltStack as u8 &&
+                            decoded_output[20].0 == Opcode::OpSwap as u8 && decoded_output[21].0 == Opcode::OpNegate as u8 && decoded_output[22].0 == Opcode::Op2 as u8 &&
+                            decoded_output[23].0 == Opcode::OpSub as u8 && decoded_output[24].0 == Opcode::OpAbs as u8 && decoded_output[25].0 == Opcode::OpMin as u8 &&
+                            decoded_output[26].0 == Opcode::Op5 as u8 && decoded_output[27].0 == Opcode::OpEqualverify as u8 && decoded_output[28].0 == Opcode::OpFromaltstack as u8 &&
+                            decoded_output[29].0 == Opcode::OpDup as u8 && decoded_output[30].0 == Opcode::OpToaltStack as u8 && decoded_output[31].0 == Opcode::Op1Sub as u8 &&
+                            decoded_output[32].0 == Opcode::Op6 as u8 && decoded_output[33].0 == Opcode::OpSub as u8 && decoded_output[34].0 == Opcode::OpEqualverify as u8 &&
+                            decoded_output[35].0 == Opcode::OpAdd as u8 && decoded_output[36].0 == Opcode::Op4 as u8 && decoded_output[37].0 == Opcode::OpEqualverify as u8 &&
+                            decoded_output[38].0 == Opcode::OpEndif as u8 && decoded_output[39].0 == Opcode::OpDup as u8 && decoded_output[40].0 == Opcode::OpHash160 as u8 &&
+                            decoded_output[41].0 == 20u8 && decoded_output[42].0 == Opcode::OpEqualverify as u8 && decoded_output[43].0 == Opcode::OpChecksig as u8 &&
+                            decoded_output[44].0 == 18u8 && decoded_output[45].0 == Opcode::OpDrop as u8 {
+                                return OutputType::Strange16;
                             }
                         }
                     }
@@ -560,6 +642,17 @@ fn classify_output(tx_id: &[u8], output: &[u8], output_idx: usize) -> OutputType
                     decoded_output[13].0 == 65u8 && decoded_output[14].0 == 65u8 && decoded_output[15].0 == 65u8 && decoded_output[16].0 == 65u8 &&
                     decoded_output[17].0 == Opcode::Op16 as u8 && decoded_output[18].0 == Opcode::OpCheckmultisig as u8 {
                         return OutputType::Multisig16of16;
+                    }
+                } else if op0 == Opcode::OpHash256 as u8 {
+                    if decoded_output.len() == 3 &&
+                    decoded_output[1].0 == 32u8 && decoded_output[2].0 == Opcode::OpEqual as u8 {
+                        return OutputType::Strange12;
+                    }
+                } else if op0 == Opcode::OpAdd as u8 {
+                    if decoded_output.len() == 6 &&
+                    decoded_output[1].0 == Opcode::OpAdd as u8 && decoded_output[2].0 == Opcode::Op13 as u8 && decoded_output[3].0 == Opcode::OpEqual as u8 &&
+                    decoded_output[4].0 == 76u8 && decoded_output[5].0 == Opcode::OpDrop as u8 {
+                        return OutputType::Strange14;
                     }
                 }
             }
