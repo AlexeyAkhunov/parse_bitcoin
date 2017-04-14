@@ -16,6 +16,7 @@ extern crate rust_base58;
 use rust_base58::{ToBase58, FromBase58};
 
 use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 extern crate bloomfilter;
 use bloomfilter::Bloom;
@@ -27,14 +28,24 @@ struct TxInput {
     script: Vec<u8>,
 }
 
+struct TxOutput {
+    value: u64,
+    script: Vec<u8>,
+}
+
+struct TimeValue {
+    time: u32,
+    value: u64,
+}
+
 struct State {
     in_map: HashMap<[u8;32], Vec<Option<TxInput>>>,
-    out_map: HashMap<[u8;32], Vec<Option<Vec<u8>>>>,
-    last_used: HashMap<[u8;25], u32>,
+    out_map: HashMap<[u8;32], Vec<Option<TxOutput>>>,
+    last_used: BTreeMap<[u8;25], TimeValue>,
 }
 
 fn main() {
-    let mut state = State{in_map: HashMap::new(), out_map: HashMap::new(), last_used: HashMap::new()};
+    let mut state = State{in_map: HashMap::new(), out_map: HashMap::new(), last_used: BTreeMap::new()};
     for prefix in 0..4 {
         match fs::read_dir("/Users/alexeyakhunov/Library/Application Support/Bitcoin/blocks") {
             Err(why) => println!("{:?}", why),
@@ -57,9 +68,9 @@ fn main() {
             Ok(file) => file,
         };
         let mut writer = BufWriter::new(out_file);
-        for (key, val) in state.last_used.iter() {
+        for (addr, timevalue) in state.last_used.iter() {
             use std::io::Write;
-            writeln!(&mut writer, "{} {}", address_from_hash(&key), val);
+            writeln!(&mut writer, "{} {} {}", address_from_hash(&addr), timevalue.time, timevalue.value);
         }
         state.last_used.clear();
     };
@@ -170,7 +181,7 @@ fn read_block<R>(prefix: u8, reader: R, size: u64, state: &mut State) where R: R
                                     let to_remove = match prevout_scripts[prevout_n] {
                                         None => false,
                                         Some(ref prevout_script) => {
-                                            action_input_output(&mut state.last_used, &id, &block[p..p+(script_sig_len as usize)], prevout_script.as_slice(), prevout_n, time);
+                                            action_input_output(&mut state.last_used, &id, &block[p..p+(script_sig_len as usize)], prevout_script.script.as_slice(), prevout_n, time, prevout_script.value);
                                             true
                                         }
                                     };
@@ -192,7 +203,7 @@ fn read_block<R>(prefix: u8, reader: R, size: u64, state: &mut State) where R: R
                 let num_outputs_p = read_varint(&block, p);
                 let num_outputs = num_outputs_p.0;
                 p = num_outputs_p.1;
-                let mut utxos: Vec<Option<Vec<u8>>> = vec![];
+                let mut utxos: Vec<Option<TxOutput>> = vec![];
                 for _ in 0..num_outputs {
                     let value_p = read_u64(&block, p);
                     p = value_p.1;
@@ -200,7 +211,7 @@ fn read_block<R>(prefix: u8, reader: R, size: u64, state: &mut State) where R: R
                     let script_pub_key_len = script_pub_key_len_p.0 as usize;
                     p = script_pub_key_len_p.1;
                     let cloned_script = block[p..p+script_pub_key_len].to_owned();
-                    utxos.push(Some(cloned_script));
+                    utxos.push(Some(TxOutput{value: value_p.0, script: cloned_script}));
                     p += script_pub_key_len; // Skip script_pub_key for now
                 }
                 p += 4; // Skip locktime
@@ -218,7 +229,7 @@ fn read_block<R>(prefix: u8, reader: R, size: u64, state: &mut State) where R: R
                                         let to_remove = match utxos[i] {
                                             None => false,
                                             Some(ref output) => {
-                                                action_input_output(&mut state.last_used, &id, input_script.script.as_slice(), output.as_slice(), i, input_script.time);
+                                                action_input_output(&mut state.last_used, &id, input_script.script.as_slice(), output.script.as_slice(), i, input_script.time, output.value);
                                                 true
                                             }
                                         };
@@ -924,7 +935,7 @@ fn classify_output(decoded_output: &Vec<(u8, Option<&[u8]>)>) -> OutputType {
     return OutputType::Unclassified;
 }
 
-fn action_input_output(last_used: &mut HashMap<[u8;25], u32>, tx_id: &[u8], input: &[u8], output: &[u8], output_idx: usize, time: u32) {
+fn action_input_output(last_used: &mut BTreeMap<[u8;25], TimeValue>, tx_id: &[u8], input: &[u8], output: &[u8], output_idx: usize, time: u32, value: u64) {
     match decode_script(output) {
         Err(why) => {
             println!("Could not decode output in txid: {:?}, error: {:?}", print_32bytes(tx_id), why)
@@ -943,10 +954,10 @@ fn action_input_output(last_used: &mut HashMap<[u8;25], u32>, tx_id: &[u8], inpu
                             Some(addr_str) => {
                                 let to_insert = match last_used.get(&addr_str) {
                                     None => true,
-                                    Some(prev_time) => time > *prev_time,
+                                    Some(prev_timevalue) => time > prev_timevalue.time,
                                 };
                                 if to_insert {
-                                    last_used.insert(addr_str, time);
+                                    last_used.insert(addr_str, TimeValue{time: time, value: value});
                                 }
                                 //println!("{:?}, txid: {:?}", addr_str, print_32bytes(tx_id));
                             },
@@ -960,10 +971,10 @@ fn action_input_output(last_used: &mut HashMap<[u8;25], u32>, tx_id: &[u8], inpu
                     Some(addr_str) => {
                         let to_insert = match last_used.get(&addr_str) {
                             None => true,
-                            Some(prev_time) => time > *prev_time,
+                            Some(prev_timevalue) => time > prev_timevalue.time,
                         };
                         if to_insert {
-                            last_used.insert(addr_str, time);
+                            last_used.insert(addr_str, TimeValue{time:time, value:value});
                         }
                         //println!("{:?}, txid: {:?}", addr_str, print_32bytes(tx_id));
                     },
