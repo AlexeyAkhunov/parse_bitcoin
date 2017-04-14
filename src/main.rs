@@ -19,6 +19,8 @@ use std::collections::HashMap;
 
 extern crate bloomfilter;
 use bloomfilter::Bloom;
+use std::error::Error;
+use std::io::BufWriter;
 
 struct TxInput {
     time: u32,
@@ -47,6 +49,19 @@ fn main() {
             }
         };
         state.out_map.clear(); // Clear out unspent outputs
+        let mut out_file_name = String::new();
+        write!(&mut out_file_name, "output_{}.txt", prefix);
+        // Write address stats into a file
+        let mut out_file = match File::create(out_file_name) {
+            Err(why) => panic!("couldn't create output file: {}", why.description()),
+            Ok(file) => file,
+        };
+        let mut writer = BufWriter::new(out_file);
+        for (key, val) in state.last_used.iter() {
+            use std::io::Write;
+            writeln!(&mut writer, "{} {}", address_from_hash(&key), val);
+        }
+        state.last_used.clear();
     };
 }
 
@@ -1043,28 +1058,27 @@ fn decode_script(slice: &[u8]) -> Result<Vec<(u8, Option<&[u8]>)>,String> {
     Ok(script)
 }
 
+fn address_from_hash(hash: &[u8;25]) -> String {
+    let mut sha256 = crypto::sha2::Sha256::new();
+    let mut buffer32b: [u8;32] = [0;32];
+    sha256.input(&hash[0..21]);
+    sha256.result(&mut buffer32b);
+    sha256.reset();
+    sha256.input(&buffer32b[0..32]);
+    sha256.result(&mut buffer32b);
+    let buffer25b: [u8;25] = [hash[0],hash[1],hash[2],hash[3],hash[4],hash[5],hash[6],hash[7],hash[8],hash[9],hash[10],
+                                            hash[11],hash[12],hash[13],hash[14],hash[15],hash[16],hash[17],hash[18],hash[19],hash[20],
+                                            buffer32b[0],buffer32b[1],buffer32b[2],buffer32b[3]];
+    buffer25b.to_base58()
+}
+
 fn public_key_from_hash(decoded_output: &Vec<(u8, Option<&[u8]>)>) -> Option<[u8;25]> {
     match decoded_output[2].1 {
         None => None,
         Some(hash) => {
-            let mut sha256 = crypto::sha2::Sha256::new();
-            let mut buffer32b: [u8;32] = [0;32];
-            let mut buffer25b: [u8;25] = [0,hash[0],hash[1],hash[2],hash[3],hash[4],hash[5],hash[6],hash[7],hash[8],hash[9],hash[10],
+            let buffer25b: [u8;25] = [0,hash[0],hash[1],hash[2],hash[3],hash[4],hash[5],hash[6],hash[7],hash[8],hash[9],hash[10],
                                             hash[11],hash[12],hash[13],hash[14],hash[15],hash[16],hash[17],hash[18],hash[19],0,0,0,0];
-            Some(buffer25b)
-            /*
-            sha256.input(&buffer25b[0..21]);
-            sha256.result(&mut buffer32b);
-            sha256.reset();
-            sha256.input(&buffer32b[0..32]);
-            sha256.result(&mut buffer32b);
-            buffer25b[21] = buffer32b[0];
-            buffer25b[22] = buffer32b[1];
-            buffer25b[23] = buffer32b[2];
-            buffer25b[24] = buffer32b[3];
-            let addr = buffer25b.to_base58();
-            Some(addr)
-            */       
+            Some(buffer25b)     
         }
     }
 }
@@ -1087,20 +1101,6 @@ fn public_key_from_script(decoded_script: Vec<(u8, Option<&[u8]>)>) -> Option<[u
                 buffer25b[0] = 5;
                 ripemd160.result(&mut buffer25b[1..21]);
                 Some(buffer25b)
-                /*
-                sha256.reset();
-                sha256.input(&buffer25b[0..21]);
-                sha256.result(&mut buffer32b);
-                sha256.reset();
-                sha256.input(&buffer32b[0..32]);
-                sha256.result(&mut buffer32b);
-                buffer25b[21] = buffer32b[0];
-                buffer25b[22] = buffer32b[1];
-                buffer25b[23] = buffer32b[2];
-                buffer25b[24] = buffer32b[3];
-                let addr = buffer25b.to_base58();
-                Some(addr)
-                */
             }
         }
     } else if decoded_script[0].0 <= Opcode::OpPushdata4 as u8 {
