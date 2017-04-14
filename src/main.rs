@@ -20,28 +20,37 @@ use std::collections::HashMap;
 extern crate bloomfilter;
 use bloomfilter::Bloom;
 
+struct TxInput {
+    time: u32,
+    script: Vec<u8>,
+}
+
+struct State {
+    in_map: HashMap<[u8;32], Vec<Option<TxInput>>>,
+    out_map: HashMap<[u8;32], Vec<Option<Vec<u8>>>>,
+    last_used: HashMap<[u8;25], u32>,
+}
+
 fn main() {
-    let mut out_map = HashMap::new();
-    let mut in_map = HashMap::new();
+    let mut state = State{in_map: HashMap::new(), out_map: HashMap::new(), last_used: HashMap::new()};
     for prefix in 0..4 {
         match fs::read_dir("/Users/alexeyakhunov/Library/Application Support/Bitcoin/blocks") {
             Err(why) => println!("{:?}", why),
             Ok(dir_entries) => {
                 let mut block_number: u32 = 0;
                 for dir_entry in dir_entries {
-                    block_number = parse_file(prefix, dir_entry, block_number, &mut in_map, &mut out_map);
+                    block_number = parse_file(prefix, dir_entry, block_number, &mut state);
                     if block_number > 1000000 {
                         break;
                     }
                 }
             }
-        }
+        };
+        state.out_map.clear(); // Clear out unspent outputs
     };
 }
 
-fn parse_file(prefix: u8, dir_entry: io::Result<fs::DirEntry>, initial_block: u32,
-        in_map: &mut HashMap<[u8;32], Vec<Option<Vec<u8>>>>,
-        out_map: &mut HashMap<[u8;32], Vec<Option<Vec<u8>>>>) -> u32 {
+fn parse_file(prefix: u8, dir_entry: io::Result<fs::DirEntry>, initial_block: u32, state: &mut State) -> u32 {
     match dir_entry {
         Err(why) => {
             println!("{:?}", why);
@@ -60,8 +69,8 @@ fn parse_file(prefix: u8, dir_entry: io::Result<fs::DirEntry>, initial_block: u3
                     }
                     Ok(mut file) => {
                         println!("Opened {:?}, prefix {:?}", filename, prefix);
-                        let bn = read_blocks(prefix, &mut file, metadata.len(), initial_block, in_map, out_map);
-                        println!("outputs: {:?}, inputs: {:?}", out_map.len(), in_map.len());
+                        let bn = read_blocks(prefix, &mut file, metadata.len(), initial_block, state);
+                        println!("outputs: {:?}, inputs: {:?}, addresses: {:?}", state.out_map.len(), state.in_map.len(), state.last_used.len());
                         bn
                     },
                 }
@@ -72,9 +81,7 @@ fn parse_file(prefix: u8, dir_entry: io::Result<fs::DirEntry>, initial_block: u3
     }
 }
 
-fn read_blocks(prefix: u8, file: &mut File, filesize: u64, initial_block: u32,
-        in_map: &mut HashMap<[u8;32], Vec<Option<Vec<u8>>>>,
-        out_map: &mut HashMap<[u8;32], Vec<Option<Vec<u8>>>>) -> u32 {
+fn read_blocks(prefix: u8, file: &mut File, filesize: u64, initial_block: u32, state: &mut State) -> u32 {
     let mut reader = BufReader::new(file);
     let mut buf: [u8; 4] = [0u8; 4];
     let mut block_number: u32 = initial_block;
@@ -91,21 +98,19 @@ fn read_blocks(prefix: u8, file: &mut File, filesize: u64, initial_block: u32,
         }
         reader.read_exact(&mut buf);
         let size = (buf[0] as u32) | ((buf[1] as u32)<<8) | ((buf[2] as u32)<<16) | ((buf[3] as u32)<<24);
-        read_block(prefix, &mut reader, size as u64, in_map, out_map);
+        read_block(prefix, &mut reader, size as u64, state);
         block_number += 1;
     }
     block_number
 }
 
-fn read_block<R>(prefix: u8, reader: R, size: u64,
-        in_map: &mut HashMap<[u8;32], Vec<Option<Vec<u8>>>>,
-        out_map: &mut HashMap<[u8;32], Vec<Option<Vec<u8>>>>) where R: Read {
+fn read_block<R>(prefix: u8, reader: R, size: u64, state: &mut State) where R: Read {
     let mut block: Vec<u8> = Vec::with_capacity(1024*1024);
     let mut block_reader = reader.take(size);
     match block_reader.read_to_end(&mut block) {
         Err(_) => println!("Error reading block"),
         Ok(len) => {
-            let time = read_u32(&block, 68);
+            let (time, _) = read_u32(&block, 68);
             let (tx_count, pos) = read_varint(&block, 80);
             let mut p = pos;
             for _ in 0..tx_count {
@@ -128,20 +133,20 @@ fn read_block<R>(prefix: u8, reader: R, size: u64,
                     if !is_coinbase {
                         if (block[prevout_hash_pos] & 0x3) == prefix {
                             let id = copy_id(&block[prevout_hash_pos..prevout_hash_pos+32]);
-                            let remove_from_map = match out_map.get_mut(&id) {
+                            let remove_from_map = match state.out_map.get_mut(&id) {
                                 None => {
-                                    let inputs: &mut Vec<Option<Vec<u8>>>;
-                                    if !in_map.contains_key(&id) {
-                                        in_map.insert(id, vec![]);
+                                    let inputs: &mut Vec<Option<TxInput>>;
+                                    if !state.in_map.contains_key(&id) {
+                                        state.in_map.insert(id, vec![]);
                                     }
-                                    inputs = in_map.get_mut(&id).unwrap();
+                                    inputs = state.in_map.get_mut(&id).unwrap();
                                     // Add the input into the inputs vector
                                     while inputs.len() < prevout_n {
                                         inputs.push(None);
                                     };
                                     if inputs.len() == prevout_n {
                                         let cloned_script_sig = block[p..p+(script_sig_len as usize)].to_owned();
-                                        inputs.push(Some(cloned_script_sig));
+                                        inputs.push(Some(TxInput{time: time, script: cloned_script_sig}));
                                     };
                                     // Do not remove from map, because there is nothing to remove
                                     false
@@ -150,7 +155,7 @@ fn read_block<R>(prefix: u8, reader: R, size: u64,
                                     let to_remove = match prevout_scripts[prevout_n] {
                                         None => false,
                                         Some(ref prevout_script) => {
-                                            action_input_output(&id, &block[p..p+(script_sig_len as usize)], prevout_script.as_slice(), prevout_n);
+                                            action_input_output(&mut state.last_used, &id, &block[p..p+(script_sig_len as usize)], prevout_script.as_slice(), prevout_n, time);
                                             true
                                         }
                                     };
@@ -162,7 +167,7 @@ fn read_block<R>(prefix: u8, reader: R, size: u64,
                                 }
                             };
                             if remove_from_map {
-                                out_map.remove(&block[prevout_hash_pos..prevout_hash_pos+32]);
+                                state.out_map.remove(&block[prevout_hash_pos..prevout_hash_pos+32]);
                             }
                         }
                     }
@@ -188,7 +193,7 @@ fn read_block<R>(prefix: u8, reader: R, size: u64,
                 if (id[0] & 0x3) == prefix {
                     // Go through UTXOs and check if we have matching inputs
                     let mut done_utxos = 0;
-                    match in_map.remove(&id) {
+                    match state.in_map.remove(&id) {
                         None => {},
                         Some(inputs) => {
                             for i in 0..inputs.len() {
@@ -198,7 +203,7 @@ fn read_block<R>(prefix: u8, reader: R, size: u64,
                                         let to_remove = match utxos[i] {
                                             None => false,
                                             Some(ref output) => {
-                                                action_input_output(&id, input_script, output.as_slice(), i);
+                                                action_input_output(&mut state.last_used, &id, input_script.script.as_slice(), output.as_slice(), i, input_script.time);
                                                 true
                                             }
                                         };
@@ -212,7 +217,7 @@ fn read_block<R>(prefix: u8, reader: R, size: u64,
                         }
                     };
                     if done_utxos < utxos.len() {
-                        out_map.insert(id, utxos);
+                        state.out_map.insert(id, utxos);
                     }
                 }
             }
@@ -904,7 +909,7 @@ fn classify_output(decoded_output: &Vec<(u8, Option<&[u8]>)>) -> OutputType {
     return OutputType::Unclassified;
 }
 
-fn action_input_output(tx_id: &[u8], input: &[u8], output: &[u8], output_idx: usize) {
+fn action_input_output(last_used: &mut HashMap<[u8;25], u32>, tx_id: &[u8], input: &[u8], output: &[u8], output_idx: usize, time: u32) {
     match decode_script(output) {
         Err(why) => {
             println!("Could not decode output in txid: {:?}, error: {:?}", print_32bytes(tx_id), why)
@@ -921,6 +926,13 @@ fn action_input_output(tx_id: &[u8], input: &[u8], output: &[u8], output_idx: us
                         let addr = public_key_from_script(decoded);
                         match addr {
                             Some(addr_str) => {
+                                let to_insert = match last_used.get(&addr_str) {
+                                    None => true,
+                                    Some(prev_time) => time > *prev_time,
+                                };
+                                if to_insert {
+                                    last_used.insert(addr_str, time);
+                                }
                                 //println!("{:?}, txid: {:?}", addr_str, print_32bytes(tx_id));
                             },
                             None => {}
@@ -931,6 +943,13 @@ fn action_input_output(tx_id: &[u8], input: &[u8], output: &[u8], output_idx: us
                 let addr = public_key_from_hash(&decoded_output);
                 match addr {
                     Some(addr_str) => {
+                        let to_insert = match last_used.get(&addr_str) {
+                            None => true,
+                            Some(prev_time) => time > *prev_time,
+                        };
+                        if to_insert {
+                            last_used.insert(addr_str, time);
+                        }
                         //println!("{:?}, txid: {:?}", addr_str, print_32bytes(tx_id));
                     },
                     None => {}
@@ -1024,7 +1043,7 @@ fn decode_script(slice: &[u8]) -> Result<Vec<(u8, Option<&[u8]>)>,String> {
     Ok(script)
 }
 
-fn public_key_from_hash(decoded_output: &Vec<(u8, Option<&[u8]>)>) -> Option<String> {
+fn public_key_from_hash(decoded_output: &Vec<(u8, Option<&[u8]>)>) -> Option<[u8;25]> {
     match decoded_output[2].1 {
         None => None,
         Some(hash) => {
@@ -1032,6 +1051,8 @@ fn public_key_from_hash(decoded_output: &Vec<(u8, Option<&[u8]>)>) -> Option<Str
             let mut buffer32b: [u8;32] = [0;32];
             let mut buffer25b: [u8;25] = [0,hash[0],hash[1],hash[2],hash[3],hash[4],hash[5],hash[6],hash[7],hash[8],hash[9],hash[10],
                                             hash[11],hash[12],hash[13],hash[14],hash[15],hash[16],hash[17],hash[18],hash[19],0,0,0,0];
+            Some(buffer25b)
+            /*
             sha256.input(&buffer25b[0..21]);
             sha256.result(&mut buffer32b);
             sha256.reset();
@@ -1042,12 +1063,13 @@ fn public_key_from_hash(decoded_output: &Vec<(u8, Option<&[u8]>)>) -> Option<Str
             buffer25b[23] = buffer32b[2];
             buffer25b[24] = buffer32b[3];
             let addr = buffer25b.to_base58();
-            Some(addr)            
+            Some(addr)
+            */       
         }
     }
 }
 
-fn public_key_from_script(decoded_script: Vec<(u8, Option<&[u8]>)>) -> Option<String> {
+fn public_key_from_script(decoded_script: Vec<(u8, Option<&[u8]>)>) -> Option<[u8;25]> {
     if decoded_script.len() == 0 {
         None
     } else if decoded_script[0].0 == Opcode::Op0 as u8 {
@@ -1064,6 +1086,8 @@ fn public_key_from_script(decoded_script: Vec<(u8, Option<&[u8]>)>) -> Option<St
                 let mut buffer25b: [u8;25] = [0;25];
                 buffer25b[0] = 5;
                 ripemd160.result(&mut buffer25b[1..21]);
+                Some(buffer25b)
+                /*
                 sha256.reset();
                 sha256.input(&buffer25b[0..21]);
                 sha256.result(&mut buffer32b);
@@ -1076,6 +1100,7 @@ fn public_key_from_script(decoded_script: Vec<(u8, Option<&[u8]>)>) -> Option<St
                 buffer25b[24] = buffer32b[3];
                 let addr = buffer25b.to_base58();
                 Some(addr)
+                */
             }
         }
     } else if decoded_script[0].0 <= Opcode::OpPushdata4 as u8 {
