@@ -41,11 +41,11 @@ struct TimeValue {
 struct State {
     in_map: HashMap<[u8;32], Vec<Option<TxInput>>>,
     out_map: HashMap<[u8;32], Vec<Option<TxOutput>>>,
-    last_used: BTreeMap<[u8;25], TimeValue>,
+    last_used: HashMap<[u8;25], TimeValue>,
 }
 
 fn main() {
-    let mut state = State{in_map: HashMap::new(), out_map: HashMap::new(), last_used: BTreeMap::new()};
+    let mut state = State{in_map: HashMap::new(), out_map: HashMap::new(), last_used: HashMap::new()};
     for prefix in 0..4 {
         match fs::read_dir("/Users/alexeyakhunov/Library/Application Support/Bitcoin/blocks") {
             Err(why) => println!("{:?}", why),
@@ -60,6 +60,10 @@ fn main() {
             }
         };
         state.out_map.clear(); // Clear out unspent outputs
+        let mut sorted_map = BTreeMap::new();
+        for (addr, timevalue) in state.last_used.drain() {
+            sorted_map.insert(address_from_hash(&addr), timevalue);
+        }
         let mut out_file_name = String::new();
         write!(&mut out_file_name, "output_{}.txt", prefix);
         // Write address stats into a file
@@ -68,11 +72,10 @@ fn main() {
             Ok(file) => file,
         };
         let mut writer = BufWriter::new(out_file);
-        for (addr, timevalue) in state.last_used.iter() {
+        for (addr, timevalue) in sorted_map.iter() {
             use std::io::Write;
-            writeln!(&mut writer, "{} {} {}", address_from_hash(&addr), timevalue.time, timevalue.value);
+            writeln!(&mut writer, "{} {} {}", addr, timevalue.time, timevalue.value);
         }
-        state.last_used.clear();
     };
 }
 
@@ -935,7 +938,7 @@ fn classify_output(decoded_output: &Vec<(u8, Option<&[u8]>)>) -> OutputType {
     return OutputType::Unclassified;
 }
 
-fn action_input_output(last_used: &mut BTreeMap<[u8;25], TimeValue>, tx_id: &[u8], input: &[u8], output: &[u8], output_idx: usize, time: u32, value: u64) {
+fn action_input_output(last_used: &mut HashMap<[u8;25], TimeValue>, tx_id: &[u8], input: &[u8], output: &[u8], output_idx: usize, time: u32, value: u64) {
     match decode_script(output) {
         Err(why) => {
             println!("Could not decode output in txid: {:?}, error: {:?}", print_32bytes(tx_id), why)
